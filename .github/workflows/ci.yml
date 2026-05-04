@@ -1,5 +1,5 @@
 # Lab 12 CI workflow — runs on every push and PR to any branch.
-# Three jobs:
+# Three jobs (placeholder — Part A replaces with the 5-stage graph):
 #   1. lint   — ruff check (style + import order + obvious bugs)
 #   2. test   — pytest on the smoke tests in tests/
 #   3. build  — multi-arch ARM64 docker build + push to GHCR (gated on lint+test)
@@ -113,27 +113,3 @@ jobs:
           # Speed up subsequent builds by caching layers in GHA's cache.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-  jetson-smoke:
-    name: Smoke test on Jetson
-    runs-on: [self-hosted, linux, arm64, jetson]
-    needs: build
-    steps:
-      - uses: actions/checkout@v5
-      - name: Pull and verify image on this Jetson
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          IMAGE="ghcr.io/${{ github.repository }}:sha-${SHORT_SHA}"
-          echo "Pulling $IMAGE"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker pull "$IMAGE"
-          docker volume create lab12-models
-          # Override the CMD with a quick engine-load check.
-          # The entrypoint still runs first (compiles engine if cache miss),
-          # then exec's our python3 -c command.
-          docker run --rm --runtime nvidia -v lab12-models:/opt/models \
-            "$IMAGE" python3 -c "
-          from ultralytics import YOLO
-          m = YOLO('/opt/models/best.engine', task='detect')
-          print('PASS: engine loads on Jetson hardware')
-          "
-
