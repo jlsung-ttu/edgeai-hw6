@@ -179,6 +179,41 @@ def cleanup(cap: Any, client: Any, frame_count: int) -> None:
     print(f"[inference] Shutdown complete. Processed {frame_count} frames.")
 
 
+def summarize_run_stats(
+    frames: int,
+    detections: int,
+    duration_s: float,
+    *,
+    label: str = "run",
+) -> str:
+    """Format an inference-run summary line for operator-friendly logging.
+
+    Used by the field-deploy report so we can paste a quick "how did the
+    last hour go" line into Slack without parsing JSON. Pure function,
+    no side effects.
+    """
+    if duration_s <= 0:
+        return f"[{label}] no measurable duration ({frames} frames)"
+    fps = frames / duration_s
+    rate = detections / frames if frames > 0 else 0.0
+    if frames < 10:
+        verdict = "warmup"
+    elif fps < 5:
+        verdict = "slow"
+    elif fps < 20:
+        verdict = "ok"
+    else:
+        verdict = "good"
+    return (
+        f"[{label}] verdict={verdict}\n"
+        f"  frames={frames}\n"
+        f"  detections={detections}\n"
+        f"  duration={duration_s:.2f}s\n"
+        f"  fps={fps:.2f}\n"
+        f"  detection-rate={rate:.3f}/frame"
+    )
+
+
 def _default_model_factory(path: str, task: str) -> Any:   # pragma: no cover
     """Real YOLO loader. Imported lazily so unit tests don't pull torch.
     Skipped from coverage because torch is Jetson-only and tests use the
