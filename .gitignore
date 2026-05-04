@@ -9,6 +9,12 @@ htmlcov/
 # Build artifacts
 *.engine
 *.onnx
+# ...except the INT8 engine deliverable from Part 0 (committed)
+!best_int8.engine
+
+# Calibration sample frames (Part 0) — large, gitignored, regenerated
+# from Lab 9 dataset on the Jetson per calibration/README.md
+calibration/calibration_data/
 
 # IDE
 .vscode/

@@ -1,0 +1,34 @@
+# INT8 calibration dataset config — read by calibrate_int8.py via Ultralytics.
+# Path is relative to the directory this YAML lives in (calibration/).
+# Class list matches HW5 configs/labels.txt (which matches Lab 9 data.yaml).
+path: calibration_data
+train: .
+val: .
+
+nc: 25
+names:
+  - Excavator
+  - Gloves
+  - Hardhat
+  - Ladder
+  - Mask
+  - NO-Hardhat
+  - NO-Mask
+  - NO-Safety Vest
+  - Person
+  - SUV
+  - Safety Cone
+  - Safety Vest
+  - bus
+  - dump truck
+  - fire hydrant
+  - machinery
+  - mini-van
+  - sedan
+  - semi
+  - trailer
+  - truck
+  - truck and trailer
+  - van
+  - vehicle
+  - wheel loader
