@@ -72,3 +72,22 @@ addopts = "-v --tb=short"
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/__init__.py", "tests/*"]
+branch = true                # also track branch (if/else) coverage
+
+[tool.coverage.report]
+fail_under = 90              # Part B's coverage gate threshold (matches HW4/HW5 convention)
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
