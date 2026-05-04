@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Inference node: runs YOLO26 TensorRT engine, publishes detections to MQTT.
+# Copyright (c) 2026 Janlung Sung
+# Tatung University — I4210 AI實務專題
+"""Inference node: runs YOLO TensorRT engine, publishes detections to MQTT.
 
-Reads frames from a video file (or camera), runs detection with
-the fine-tuned TensorRT engine from Lab 9, and publishes bounding-box
-results as JSON messages to an MQTT topic.
+Refactored from the Lab 10 monolithic main() into small testable helpers:
+- parse_args / build_detection_payload / write_health are pure functions
+- connect_mqtt accepts a client_factory so tests can inject a mock
+- run_inference_loop accepts injected video_capture / model / mqtt_client
+- main() wires the above together and is itself testable end-to-end via mocks
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -12,116 +18,189 @@ import os
 import signal
 import sys
 import time
+from typing import Any, Callable, Iterable, Optional
 
 import cv2
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
-from ultralytics import YOLO
 
-# --- Graceful shutdown + Docker health check heartbeat ---
-running = True
+# `ultralytics` is imported lazily inside main()'s default model_factory.
+# It pulls torch transitively, and torch has no x86 PyPI wheel for the Jetson
+# CUDA build we use (PDM excludes it from the resolution). Deferring the
+# import keeps unit tests on the laptop running while the real Jetson
+# container still picks it up at first call.
+
+# --- module-level state ---
+_running = True
 
 
-def signal_handler(sig, frame):
+def signal_handler(sig: int, _frame: Any) -> None:
     """Handle SIGTERM/SIGINT for graceful shutdown."""
-    global running
+    global _running
     print(f"\n[inference] Received signal {sig}, shutting down...")
-    running = False
+    _running = False
 
 
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+def is_running() -> bool:
+    """Accessor for the run flag — easier to test than module-global access."""
+    return _running
 
 
-def write_health():
-    """Timestamp heartbeat for Docker HEALTHCHECK (read by healthcheck.py).
-    Silently no-ops if /tmp isn't writable — harmless outside Docker."""
+def reset_running_for_tests() -> None:
+    """Reset _running to True between tests."""
+    global _running
+    _running = True
+
+
+def install_signal_handlers() -> None:
+    """Wire SIGTERM/SIGINT to signal_handler. Skipped during tests."""
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+
+def write_health(path: str = "/tmp/inference_health") -> bool:
+    """Timestamp heartbeat for Docker HEALTHCHECK. Returns True on success."""
     try:
-        with open("/tmp/inference_health", "w") as f:
+        with open(path, "w") as f:
             f.write(str(time.time()))
+        return True
     except OSError:
-        pass
+        return False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="YOLO26 TensorRT inference node")
+def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
+    """Pure parsing — no I/O, no globals. argv=None means sys.argv (production)."""
+    parser = argparse.ArgumentParser(description="YOLO TensorRT inference node")
     parser.add_argument("--model", default="/opt/models/best.engine",
-                        help="Path to TensorRT engine (built at image-build time)")
+                        help="Path to TensorRT engine")
     parser.add_argument("--source", default="/opt/data/test_video.mp4",
                         help="Video file or camera index")
     parser.add_argument("--imgsz", type=int, default=320)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--mqtt-broker", default=os.getenv("MQTT_BROKER", "localhost"))
     parser.add_argument("--mqtt-port", type=int, default=int(os.getenv("MQTT_PORT", "1883")))
-    parser.add_argument("--mqtt-topic", default="/sense/vision/detections")
-    args = parser.parse_args()
+    parser.add_argument("--mqtt-topic", default="jetson/vision/detections")
+    return parser.parse_args(list(argv) if argv is not None else None)
 
-    # Load model. task='detect' is required for .engine files — they don't
-    # embed task metadata the way .pt files do, so Ultralytics can't infer it.
-    print(f"[inference] Loading model: {args.model}")
-    model = YOLO(args.model, task="detect")
 
-    # Connect MQTT
-    client = mqtt.Client(CallbackAPIVersion.VERSION2)
-    print(f"[inference] Connecting to MQTT broker: {args.mqtt_broker}:{args.mqtt_port}")
-    client.connect(args.mqtt_broker, args.mqtt_port)
+def build_detection_payload(results: Any, frame_count: int,
+                             timestamp: Optional[float] = None) -> dict:
+    """Convert YOLO results into the MQTT JSON payload schema.
+
+    Pure function — accepts whatever shape `results` has (real YOLO Results
+    object, list of mocks with .boxes, etc.) and returns a serializable dict.
+    """
+    detections = []
+    for r in results:
+        for box in r.boxes:
+            detections.append({
+                "class": r.names[int(box.cls)],
+                "confidence": round(float(box.conf), 3),
+                "bbox": [round(float(x), 1) for x in box.xyxy[0].tolist()],
+            })
+    return {
+        "t": round(timestamp if timestamp is not None else time.time(), 3),
+        "frame": frame_count,
+        "detections": detections,
+        "count": len(detections),
+    }
+
+
+def connect_mqtt(broker: str, port: int,
+                  client_factory: Optional[Callable[..., mqtt.Client]] = None
+                  ) -> mqtt.Client:
+    """Create an MQTT client and connect. Tests pass a mock factory."""
+    factory = client_factory or (lambda: mqtt.Client(CallbackAPIVersion.VERSION2))
+    client = factory()
+    print(f"[inference] Connecting to MQTT broker: {broker}:{port}")
+    client.connect(broker, port)
     client.loop_start()
+    return client
 
-    # Open video
-    cap = cv2.VideoCapture(args.source)
+
+def open_video_source(source: str,
+                       cap_factory: Optional[Callable[..., Any]] = None) -> Any:
+    """Open the video source. Tests pass a cap_factory returning a mock."""
+    factory = cap_factory or cv2.VideoCapture
+    cap = factory(source)
     if not cap.isOpened():
-        print(f"[inference] ERROR: Cannot open source: {args.source}")
-        sys.exit(1)
+        raise RuntimeError(f"Cannot open source: {source}")
+    return cap
 
-    frame_count = 0
-    fps_start = time.monotonic()
 
-    print(f"[inference] Running inference on {args.source}...")
-    while running:
+def process_one_frame(cap: Any, model: Any, args: argparse.Namespace,
+                       client: Any, frame_count: int) -> bool:
+    """Read one frame, run inference, publish. Returns False on EOF.
+
+    Loops the video on EOF (so the test container runs continuously).
+    """
+    ret, frame = cap.read()
+    if not ret:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ret, frame = cap.read()
         if not ret:
-            # Loop video for continuous testing
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = cap.read()
-            if not ret:
-                break
+            return False
+    results = model.predict(frame, imgsz=args.imgsz, conf=args.conf, verbose=False)
+    payload = build_detection_payload(results, frame_count)
+    client.publish(args.mqtt_topic, json.dumps(payload), qos=0)
+    return True
 
-        results = model.predict(frame, imgsz=args.imgsz, conf=args.conf, verbose=False)
 
-        # Build detection payload
-        detections = []
-        for r in results:
-            for box in r.boxes:
-                detections.append({
-                    "class": r.names[int(box.cls)],
-                    "confidence": round(float(box.conf), 3),
-                    "bbox": [round(float(x), 1) for x in box.xyxy[0].tolist()],
-                })
+def run_inference_loop(cap: Any, model: Any, args: argparse.Namespace,
+                        client: Any, max_frames: Optional[int] = None) -> int:
+    """Drive the inference loop. max_frames lets tests bound the loop.
 
-        payload = {
-            "t": round(time.time(), 3),
-            "frame": frame_count,
-            "detections": detections,
-            "count": len(detections),
-        }
-        client.publish(args.mqtt_topic, json.dumps(payload), qos=0)
-
+    In production max_frames is None (loop forever until SIGTERM).
+    """
+    frame_count = 0
+    while is_running():
+        if max_frames is not None and frame_count >= max_frames:
+            break
+        if not process_one_frame(cap, model, args, client, frame_count):
+            break
         frame_count += 1
-        # Heartbeat for Docker HEALTHCHECK (every 10 frames ≈ 200 ms at 50 FPS)
         if frame_count % 10 == 0:
             write_health()
-        if frame_count % 100 == 0:
-            elapsed = time.monotonic() - fps_start
-            fps = frame_count / elapsed if elapsed > 0 else 0
-            print(f"[inference] {frame_count} frames, {fps:.1f} FPS, "
-                  f"last frame: {len(detections)} detections")
+    return frame_count
 
-    # Cleanup
+
+def cleanup(cap: Any, client: Any, frame_count: int) -> None:
+    """Release resources. Idempotent."""
     cap.release()
     client.loop_stop()
     client.disconnect()
     print(f"[inference] Shutdown complete. Processed {frame_count} frames.")
 
 
-if __name__ == "__main__":
-    main()
+def _default_model_factory(path: str, task: str) -> Any:   # pragma: no cover
+    """Real YOLO loader. Imported lazily so unit tests don't pull torch.
+    Skipped from coverage because torch is Jetson-only and tests use the
+    injected mock factory; real exercise happens in tests/integration/."""
+    from ultralytics import YOLO  # noqa: PLC0415  (deliberate lazy import)
+    return YOLO(path, task=task)
+
+
+def main(argv: Optional[Iterable[str]] = None,
+          model_factory: Optional[Callable[..., Any]] = None,
+          cap_factory: Optional[Callable[..., Any]] = None,
+          mqtt_factory: Optional[Callable[..., mqtt.Client]] = None,
+          max_frames: Optional[int] = None) -> int:
+    """Main entry point. All heavy deps are injectable for tests."""
+    args = parse_args(argv)
+    print(f"[inference] Loading model: {args.model}")
+    model = (model_factory or _default_model_factory)(args.model, "detect")
+    client = connect_mqtt(args.mqtt_broker, args.mqtt_port, client_factory=mqtt_factory)
+    try:
+        cap = open_video_source(args.source, cap_factory=cap_factory)
+    except RuntimeError as e:
+        print(f"[inference] ERROR: {e}")
+        return 1
+    print(f"[inference] Running inference on {args.source}...")
+    frame_count = run_inference_loop(cap, model, args, client, max_frames=max_frames)
+    cleanup(cap, client, frame_count)
+    return 0
+
+
+if __name__ == "__main__":   # pragma: no cover
+    install_signal_handlers()
+    sys.exit(main())
