@@ -58,8 +58,15 @@ def install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, signal_handler)
 
 
-def write_health(path: str = "/tmp/inference_health") -> bool:
-    """Timestamp heartbeat for Docker HEALTHCHECK. Returns True on success."""
+def write_health(path: str = "/app/inference_health") -> bool:
+    """Timestamp heartbeat for Docker HEALTHCHECK. Returns True on success.
+
+    Default lives under the container's WORKDIR (/app) — writable by the
+    inference user, readable by healthcheck.py in the same container,
+    and not shared with any other process. We deliberately avoid /tmp:
+    predictable temp paths invite symlink attacks (Bandit B108) and the
+    container's /app is the cleaner choice anyway.
+    """
     try:
         with open(path, "w") as f:
             f.write(str(time.time()))

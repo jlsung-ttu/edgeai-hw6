@@ -77,14 +77,19 @@ jobs:
           cache: pip
 
       - name: Install test deps
-        # We deliberately don't pip-install requirements.txt here — most of
-        # those packages need a Jetson + CUDA wheel that doesn't exist on
-        # x86. Unit tests use mocks; integration tests run on the Jetson.
+        # We deliberately don't pip-install all of requirements.txt — the
+        # Jetson torch wheel doesn't exist on x86 (it's CUDA+aarch64 only).
+        # We DO install cv2 and paho-mqtt because src/inference_node.py
+        # imports them at module level — without them, even importing the
+        # test file fails with ModuleNotFoundError. Unit tests then mock
+        # the actual cv2/paho behavior.
         run: |
           pip install \
             pytest==8.3.3 \
             pytest-cov==5.0.0 \
-            pytest-mock==3.14.0
+            pytest-mock==3.14.0 \
+            opencv-python==4.10.0.84 \
+            paho-mqtt==2.1.0
 
       - name: Run pytest with coverage gate (≥90%)
         # --ignore=tests/integration: those tests need docker + GPU and
@@ -103,7 +108,7 @@ jobs:
         # if: always() so the artifact uploads even when the test job
         # fails — useful for diagnosing why coverage dropped
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-html
           path: htmlcov/
