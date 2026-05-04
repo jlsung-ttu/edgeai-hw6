@@ -199,13 +199,9 @@ jobs:
     name: Integration test (Jetson)
     runs-on: [self-hosted, linux, arm64, jetson]
     needs: build
-    # TODO(part-c-dryrun): temporarily allowing PRs and any branch push so
-    # we can validate Part C against the runner without first merging to
-    # main. `success()` keeps the `needs: build` gate intact (won't run if
-    # build failed), but drops the main-only branch filter. Revert before
-    # final submission to:
-    #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    if: success()
+    # PRs don't get to touch the real Jetson — the build job already
+    # validated the image cross-compiles. Only main pushes run this.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v5
 
