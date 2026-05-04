@@ -199,9 +199,13 @@ jobs:
     name: Integration test (Jetson)
     runs-on: [self-hosted, linux, arm64, jetson]
     needs: build
-    # PRs don't get to touch the real Jetson — the build job already
-    # validated the image cross-compiles. Only main pushes run this.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # TODO(part-c-dryrun): temporarily allowing PRs and any branch push so
+    # we can validate Part C against the runner without first merging to
+    # main. `success()` keeps the `needs: build` gate intact (won't run if
+    # build failed), but drops the main-only branch filter. Revert before
+    # final submission to:
+    #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: success()
     steps:
       - uses: actions/checkout@v5
 
@@ -210,19 +214,28 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Pull and verify image on this Jetson
-        # Part C will replace this with a real pytest E2E test under
-        # tests/integration/. For now (Part A wiring), just prove the
-        # image pulls and the entrypoint reaches the engine-ready signal.
+      - name: Pre-pull the per-commit image
+        # Pull explicitly so the test fixture's `docker run` is fast and
+        # so a missing-image failure surfaces here (clearer error than
+        # buried inside pytest output).
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE="ghcr.io/${{ github.repository }}:sha-${SHORT_SHA}"
-          echo "Pulling $IMAGE"
-          docker pull "$IMAGE"
-          docker volume create lab12-models
-          docker run --rm --runtime nvidia -v lab12-models:/opt/models \
-            "$IMAGE" python3 -c "
-          from ultralytics import YOLO
-          m = YOLO('/opt/models/best.engine', task='detect')
-          print('PASS: engine loads on Jetson hardware')
-          "
+          echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+          docker pull "${IMAGE}"
+
+      - name: Install test deps on the runner
+        # System python is 3.10 with the Jetson torch wheel — we deliberately
+        # don't recreate a venv. paho-mqtt is the only thing the integration
+        # test needs that isn't already in the dustynv image.
+        run: |
+          python3 -m pip install --user --quiet \
+            pytest==8.3.3 \
+            paho-mqtt==2.1.0
+
+      - name: Run E2E integration test
+        # IMAGE is exported by the pre-pull step above. The test pulls the
+        # same tag the build job pushed, so we're testing exactly what would
+        # ship.
+        run: |
+          python3 -m pytest tests/integration/test_jetson_e2e.py -v --tb=short

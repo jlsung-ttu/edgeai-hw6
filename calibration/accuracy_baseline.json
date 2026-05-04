@@ -1,0 +1,7 @@
+{
+  "fp16_map50": 0.4138,
+  "int8_map50": 0.4206,
+  "test_split": "hw5/models/dataset (split=test, imgsz=320)",
+  "calibrated_at": "2026-05-04",
+  "best_pt_md5": "6f9c47bdb8d38344c66017d634518cd1"
+}
