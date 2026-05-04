@@ -16,6 +16,14 @@ htmlcov/
 # from Lab 9 dataset on the Jetson per calibration/README.md
 calibration/calibration_data/
 
+# TensorRT calibration cache + Ultralytics image-scan caches —
+# regenerated whenever calibration runs against a new best.pt.
+*.cache
+
+# Ultralytics validation/inference output — `yolo val ...` writes
+# runs/detect/val-N/ on each invocation. Regenerable.
+runs/
+
 # IDE
 .vscode/
 .idea/
