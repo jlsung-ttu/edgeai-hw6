@@ -1,77 +1,51 @@
 [project]
-name = "edgeai-lab12"
+name = "edgeai-hw6"
 version = "0.1.0"
-description = "Lab 12 — GitHub Actions CI/CD for the Lab 10 Orin Nano container"
-# Pin to the 3.10 line — the dustynv/l4t-pytorch base image and the Jetson
-# system Python are both 3.10. ">=3.10" would have pdm consider 3.11+
-# wheels it would later have to skip, emitting many warnings.
+description = "HW6 — Optimized, Power-Tuned Edge-AI Service with Production CI/CD"
+# Pin to the 3.10 line — same as Lab 9/10/HW5. The dustynv container and
+# the Jetson system Python are both 3.10. ">=3.10" makes pdm consider
+# 3.11+ wheels it would later have to skip.
 requires-python = "==3.10.*"
+license = {text = "MIT"}
+# Minimal host-side deps. Heavy ML packages (ultralytics, opencv-python,
+# onnxruntime) live in requirements.txt — that's the source of truth for
+# what gets pip-installed inside Dockerfile.ci. The host PDM venv is just
+# for the dev loop (lint, tests, security scans). Match HW5's pattern:
+# heavy ML stays in containers; host PDM is small.
 dependencies = [
-    "ultralytics==8.3.40",
+    "paho-mqtt>=2.0",
+    "numpy>=1.26,<2",
+]
+
+[tool.pdm]
+# Not building a sdist/wheel — just managing the dev environment for the
+# top-level scripts and tests. distribution=false prevents pdm from trying
+# to auto-discover packages, which fails when there are .py files at the
+# repo root AND in src/ AND in tests/.
+distribution = false
+
+[tool.pdm.dev-dependencies]
+# Test deps — local dev loop + CI's `test` job (paired versions).
+test = [
+    "pytest==8.3.3",
+    "pytest-cov==5.0.0",
+    "pytest-mock==3.14.0",
+    # opencv + paho are needed by tests because src/inference_node.py
+    # imports them at module load. Tests then mock the actual behavior.
     "opencv-python==4.10.0.84",
-    "paho-mqtt==2.1.0",
-    "onnxruntime==1.20.0",
-    # Pin numpy to the 1.x line — the dustynv container's Jetson torch 2.7.0
-    # was compiled against numpy 1.x, and matplotlib (ultralytics transitive)
-    # would otherwise pull numpy 2.x and break torch's C bindings at runtime.
-    "numpy==1.26.4",
 ]
-
-# Dev tools — installed by `pdm install -d`, NOT shipped in the container.
-# Used by the CI lint + pytest jobs (Step 1) and the local dev loop.
-[dependency-groups]
-dev = [
+# Code quality — ruff + bandit + pip-audit (matches CI's `lint` and
+# `security-scan` jobs). pip-audit reads requirements.txt at scan time;
+# no pyproject config needed for it.
+quality = [
     "ruff>=0.6",
-    "pytest>=8",
-    "pytest-cov>=5",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
 ]
-
-# These packages are already provided by the dustynv/l4t-pytorch base image
-# (Jetson-specific ARM64 + CUDA 12.6 builds). Excluding them from pdm
-# resolution keeps `pdm export` from pulling generic x86/CUDA wheels that
-# would clobber the working container setup at build time.
-[tool.pdm.resolution]
-excludes = [
-    "torch",
-    "torchvision",
-    "triton",
-    "sympy",
-    "cuda-toolkit",
-    "cuda-bindings",
-    "cuda-pathfinder",
-    "nvidia-cublas",
-    "nvidia-cuda-cupti",
-    "nvidia-cuda-nvrtc",
-    "nvidia-cuda-runtime",
-    "nvidia-cudnn-cu13",
-    "nvidia-cufft",
-    "nvidia-cufile",
-    "nvidia-curand",
-    "nvidia-cusolver",
-    "nvidia-cusparse",
-    "nvidia-cusparselt-cu13",
-    "nvidia-nccl-cu13",
-    "nvidia-nvjitlink",
-    "nvidia-nvshmem-cu13",
-    "nvidia-nvtx",
-]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-# Small starter set so the first run isn't a wall of red.
-select = ["E", "F", "I", "W"]
-ignore = ["E501"]   # line-too-long: leave for the formatter
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
-
-[build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
 
 [tool.coverage.run]
 source = ["src"]
@@ -91,3 +65,19 @@ exclude_lines = [
 
 [tool.coverage.html]
 directory = "htmlcov"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Small starter set — matches Lab 12's baseline. Extend with B/UP/SIM/N/RUF
+# for tighter style enforcement if you want HW5-grade strictness.
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]   # line-too-long: leave for the formatter
+
+[tool.bandit]
+# B108 (hardcoded /tmp) is fixed at the source — write_health writes to
+# /app/inference_health (under the container's WORKDIR), not /tmp.
+# Tests are excluded from scanning by passing `bandit -r src/` (see CI).
+exclude_dirs = ["tests", ".venv", ".pdm-build"]
