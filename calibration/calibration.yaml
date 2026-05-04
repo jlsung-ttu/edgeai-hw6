@@ -1,7 +1,7 @@
 # INT8 calibration dataset config — read by calibrate_int8.py via Ultralytics.
 # Path is relative to the directory this YAML lives in (calibration/).
 # Class list matches HW5 configs/labels.txt (which matches Lab 9 data.yaml).
-path: /home/jetson/project/edgeai-hw6/calibration/calibration_data
+path: calibration_data
 train: .
 val: .
 
