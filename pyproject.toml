@@ -1,0 +1,74 @@
+[project]
+name = "edgeai-lab12"
+version = "0.1.0"
+description = "Lab 12 — GitHub Actions CI/CD for the Lab 10 Orin Nano container"
+# Pin to the 3.10 line — the dustynv/l4t-pytorch base image and the Jetson
+# system Python are both 3.10. ">=3.10" would have pdm consider 3.11+
+# wheels it would later have to skip, emitting many warnings.
+requires-python = "==3.10.*"
+dependencies = [
+    "ultralytics==8.3.40",
+    "opencv-python==4.10.0.84",
+    "paho-mqtt==2.1.0",
+    "onnxruntime==1.20.0",
+    # Pin numpy to the 1.x line — the dustynv container's Jetson torch 2.7.0
+    # was compiled against numpy 1.x, and matplotlib (ultralytics transitive)
+    # would otherwise pull numpy 2.x and break torch's C bindings at runtime.
+    "numpy==1.26.4",
+]
+
+# Dev tools — installed by `pdm install -d`, NOT shipped in the container.
+# Used by the CI lint + pytest jobs (Step 1) and the local dev loop.
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+# These packages are already provided by the dustynv/l4t-pytorch base image
+# (Jetson-specific ARM64 + CUDA 12.6 builds). Excluding them from pdm
+# resolution keeps `pdm export` from pulling generic x86/CUDA wheels that
+# would clobber the working container setup at build time.
+[tool.pdm.resolution]
+excludes = [
+    "torch",
+    "torchvision",
+    "triton",
+    "sympy",
+    "cuda-toolkit",
+    "cuda-bindings",
+    "cuda-pathfinder",
+    "nvidia-cublas",
+    "nvidia-cuda-cupti",
+    "nvidia-cuda-nvrtc",
+    "nvidia-cuda-runtime",
+    "nvidia-cudnn-cu13",
+    "nvidia-cufft",
+    "nvidia-cufile",
+    "nvidia-curand",
+    "nvidia-cusolver",
+    "nvidia-cusparse",
+    "nvidia-cusparselt-cu13",
+    "nvidia-nccl-cu13",
+    "nvidia-nvjitlink",
+    "nvidia-nvshmem-cu13",
+    "nvidia-nvtx",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Small starter set so the first run isn't a wall of red.
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]   # line-too-long: leave for the formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
