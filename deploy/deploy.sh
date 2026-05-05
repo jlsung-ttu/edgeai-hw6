@@ -13,7 +13,15 @@ set -euo pipefail
 TAG="${1:?Usage: deploy.sh <vX.Y.Z|sha-XXXXXXX>}"
 ENV="${DEPLOY_ENV:-production}"
 STATE_DIR=/var/lib/edgeai-hw6
-sudo mkdir -p "$STATE_DIR"
+
+# STATE_DIR must be writable by the deploy user — done once during D5 setup:
+#   sudo mkdir -p /var/lib/edgeai-hw6
+#   sudo chown $USER:$USER /var/lib/edgeai-hw6
+# This script avoids sudo on state-file ops so deploy.yml's non-interactive
+# SSH session doesn't get blocked waiting for a password it can't supply.
+# The only sudo'd commands below are nvpmodel and jetson_clocks, which
+# Step 0.0 already configured for NOPASSWD.
+mkdir -p "$STATE_DIR"
 
 # 1. Resolve the configured power-mode NAME → numeric ID for THIS Jetson SKU.
 #    (Original Orin Nano: 7W/15W/MAXN; Orin Nano Super: 7W/15W/25W/MAXN_SUPER.)
@@ -32,12 +40,9 @@ sudo jetson_clocks
 sleep 2
 
 # 2. Save the currently-deployed tag for Part E's rollback.sh.
-#    `sudo tee` because /var/lib/edgeai-hw6/ is owned by root — bare `>`
-#    would fail with permission denied even under sudo, since the redirect
-#    happens in the parent shell before sudo elevates.
 if [ -f "$STATE_DIR/deployed.txt" ]; then
-  PREV=$(sudo cat "$STATE_DIR/deployed.txt")
-  echo "$PREV" | sudo tee -a "$STATE_DIR/deployed.txt.history" >/dev/null
+  PREV=$(cat "$STATE_DIR/deployed.txt")
+  echo "$PREV" >> "$STATE_DIR/deployed.txt.history"
   echo "[deploy] Previous tag was $PREV (saved for rollback)"
 fi
 
@@ -58,5 +63,5 @@ if ! bash deploy/healthcheck.sh; then
 fi
 
 # 5. Mark this tag as the new current.
-echo "$TAG" | sudo tee "$STATE_DIR/deployed.txt" >/dev/null
+echo "$TAG" > "$STATE_DIR/deployed.txt"
 echo "[deploy] Deployed $TAG at power mode $MODE_NAME"
