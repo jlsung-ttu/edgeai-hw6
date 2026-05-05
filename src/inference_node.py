@@ -185,7 +185,11 @@ def _default_model_factory(path: str, task: str) -> Any:   # pragma: no cover
     """Real YOLO loader. Imported lazily so unit tests don't pull torch.
     Skipped from coverage because torch is Jetson-only and tests use the
     injected mock factory; real exercise happens in tests/integration/."""
-    from ultralytics import YOLO  # noqa: PLC0415  (deliberate lazy import)
+    # Deliberate lazy import — torch is Jetson-only, can't be loaded on the
+    # x86 test job. The HW5-style pylint config (deferred to the compliance
+    # refactor task) globally disables `import-outside-toplevel` which is
+    # what would otherwise flag this; current ruff config doesn't select PL.
+    from ultralytics import YOLO
     return YOLO(path, task=task)
 
 

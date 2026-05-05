@@ -21,6 +21,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
 PORT = int(os.environ.get("HEALTHZ_PORT", "8000"))
+# Bind to loopback by default. Production deployments use docker compose's
+# `network_mode: host` (deploy/docker-compose.yml), so the host's
+# healthcheck.sh reaches us via 127.0.0.1:8000 without needing the
+# container to bind on all interfaces. Override to 0.0.0.0 only when a
+# bridged-network deployment needs external reachability.
+BIND = os.environ.get("HEALTHZ_BIND", "127.0.0.1")
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "unknown")
 
 
@@ -52,7 +58,12 @@ def _current_power_mode() -> str:
 class _Handler(BaseHTTPRequestHandler):
     """One-method HTTP handler — only /healthz GET is recognized."""
 
-    def do_GET(self):  # noqa: N802 — http.server method name is fixed by the stdlib
+    def do_GET(self):
+        # Method name is fixed by the stdlib's BaseHTTPRequestHandler API
+        # (it dispatches based on `do_<METHOD>`). The pep8-naming check
+        # for this is suppressed at the pyproject.toml level (N802 is in
+        # ruff's allowed-ignore list once the HW5-style compliance
+        # refactor lands; today's ruff config doesn't select N rules at all).
         if self.path != "/healthz":
             self.send_error(404)
             return
@@ -78,8 +89,11 @@ _started: Optional[threading.Thread] = None
 def start_in_thread() -> Optional[threading.Thread]:
     """Start the healthz server on a daemon thread so it dies with main().
 
-    Bound to 0.0.0.0 so the deploy-side healthcheck.sh on the host can
-    reach it through the docker compose `network_mode: host` mapping.
+    Binds to BIND:PORT (defaults loopback:8000). With Part D's docker
+    compose `network_mode: host`, loopback inside the container IS the
+    host's loopback, so deploy/healthcheck.sh reaches us at
+    http://localhost:8000/healthz without needing a bind-all-interfaces
+    address.
 
     Idempotent: a second call within the same process returns the existing
     thread instead of trying to re-bind the port. Tolerates `OSError:
@@ -92,9 +106,9 @@ def start_in_thread() -> Optional[threading.Thread]:
     if _started is not None and _started.is_alive():
         return _started
     try:
-        server = HTTPServer(("0.0.0.0", PORT), _Handler)  # noqa: S104  intentional public bind
+        server = HTTPServer((BIND, PORT), _Handler)
     except OSError as exc:
-        print(f"[healthz] WARNING: could not bind :{PORT} — {exc}. Skipping.")
+        print(f"[healthz] WARNING: could not bind {BIND}:{PORT} — {exc}. Skipping.")
         return None
     _started = threading.Thread(target=server.serve_forever, daemon=True, name="healthz")
     _started.start()
