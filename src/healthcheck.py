@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Optional
 
 PORT = int(os.environ.get("HEALTHZ_PORT", "8000"))
@@ -29,30 +30,48 @@ PORT = int(os.environ.get("HEALTHZ_PORT", "8000"))
 BIND = os.environ.get("HEALTHZ_BIND", "127.0.0.1")
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "unknown")
 
+# Files we read to determine the live power mode. These are bind-mounted
+# from the host by deploy/docker-compose.yml. We read them directly
+# instead of running `nvpmodel -q` because the nvpmodel binary hardcodes
+# /proc/device-tree/compatible, and procfs paths can't be bind-mounted
+# into a container at runtime.
+_NVPMODEL_STATUS = Path(os.environ.get("NVPMODEL_STATUS", "/var/lib/nvpmodel/status"))
+_NVPMODEL_CONF = Path(os.environ.get("NVPMODEL_CONF", "/etc/nvpmodel.conf"))
+
 
 def _current_power_mode() -> str:
-    """Best-effort read of the live nvpmodel state.
+    """Best-effort read of the live power mode by parsing nvpmodel state.
 
-    Returns empty string if nvpmodel isn't on PATH (e.g. running in CI on
-    x86, where there's no Jetson). The deploy-side healthcheck.sh treats
-    empty as 'unknown' rather than 'failure' — the only fatal condition
-    is the HTTP request itself not returning 200.
+    Reads two files (both bind-mounted by deploy/docker-compose.yml):
+      - /var/lib/nvpmodel/status   contains "pmode:NNNN" — the active mode ID
+      - /etc/nvpmodel.conf         contains "< POWER_MODEL ID=N NAME=X >" lines
+    Looks up the matching NAME for the active ID and returns it. Returns
+    empty string when either file is missing (e.g. on x86 CI where there's
+    no Jetson) or unparseable. The deploy-side healthcheck.sh treats
+    empty as 'unknown' rather than 'failure'.
+
+    Why parse files instead of running `nvpmodel -q`? The binary hardcodes
+    /proc/device-tree/compatible and that procfs path cannot be bind-mounted
+    into a container — so the binary always falls back to "default config"
+    and reports nothing. Reading the runtime status file directly works
+    without needing privileged mode.
     """
     try:
-        out = subprocess.run(
-            ["nvpmodel", "-q"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        # nvpmodel -q output line: "NV Power Mode: 15W"
-        for line in out.stdout.splitlines():
-            if "Power Mode" in line:
-                return line.split(":", 1)[1].strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return ""
+        status = _NVPMODEL_STATUS.read_text().strip()
+    except OSError:
+        return ""
+    match_id = re.match(r"pmode:(\d+)", status)
+    if not match_id:
+        return ""
+    mode_id = int(match_id.group(1))
+    try:
+        conf = _NVPMODEL_CONF.read_text()
+    except OSError:
+        return ""
+    match_name = re.search(
+        rf"<\s*POWER_MODEL\s+ID={mode_id}\s+NAME=(\S+)\s*>", conf,
+    )
+    return match_name.group(1) if match_name else ""
 
 
 class _Handler(BaseHTTPRequestHandler):

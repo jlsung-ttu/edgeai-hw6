@@ -222,6 +222,37 @@ def test_open_video_source_default_uses_cv2():
         assert out is instance
 
 
+def test_open_video_source_converts_digit_string_to_int_for_camera():
+    """`--source 0` (camera index) must reach cv2 as int 0, not str "0".
+    Otherwise cv2.VideoCapture("0") looks for a file named "0" instead
+    of opening camera index 0 — that's the actual production failure
+    mode that drove this conversion."""
+    captured = []
+
+    def factory(src):
+        captured.append(src)
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        return cap
+
+    node.open_video_source("0", cap_factory=factory)
+    assert captured == [0]   # int, not "0"
+
+
+def test_open_video_source_keeps_path_as_string():
+    """Non-digit sources (file paths, URLs) must NOT be int-coerced."""
+    captured = []
+
+    def factory(src):
+        captured.append(src)
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        return cap
+
+    node.open_video_source("/opt/data/video.mp4", cap_factory=factory)
+    assert captured == ["/opt/data/video.mp4"]
+
+
 # ──────────────────────────────────────────────────────────────────
 # process_one_frame
 # ──────────────────────────────────────────────────────────────────

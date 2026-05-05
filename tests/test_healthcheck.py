@@ -5,48 +5,76 @@
 
 The HTTP server itself is exercised end-to-end by Part C's integration
 test on the Jetson; these unit tests cover the parsing + start_in_thread
-plumbing on x86 without needing a real nvpmodel binary or a live socket.
+plumbing on x86 without needing a real Jetson or live socket.
 """
 from __future__ import annotations
 
 import json
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src import healthcheck
 
-# --- _current_power_mode ---
+# --- _current_power_mode (file-based) ---
 
-def test_current_power_mode_returns_empty_when_nvpmodel_missing():
-    """No nvpmodel binary on PATH (e.g. CI on x86) must return '' not raise."""
-    with patch("subprocess.run", side_effect=FileNotFoundError):
-        assert healthcheck._current_power_mode() == ""
-
-
-def test_current_power_mode_returns_empty_on_timeout():
-    """If nvpmodel hangs, we must not block /healthz forever."""
-    import subprocess
-    with patch("subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="nvpmodel", timeout=2)):
-        assert healthcheck._current_power_mode() == ""
+NVPMODEL_CONF_SAMPLE = """
+< POWER_MODEL ID=0 NAME=15W >
+< POWER_MODEL ID=1 NAME=7W >
+< POWER_MODEL ID=2 NAME=MAXN_SUPER >
+"""
 
 
-def test_current_power_mode_parses_nvpmodel_output():
-    """Real nvpmodel -q output: extracts the value after 'Power Mode:'."""
-    fake = MagicMock()
-    fake.stdout = "NV Power Mode: 15W\nNV Fan Mode: quiet\n"
-    with patch("subprocess.run", return_value=fake):
-        assert healthcheck._current_power_mode() == "15W"
+def _stage_files(tmp_path: Path, status: str = None, conf: str = NVPMODEL_CONF_SAMPLE):
+    """Write status + conf into tmp_path and point healthcheck at them."""
+    if status is not None:
+        (tmp_path / "status").write_text(status)
+        healthcheck._NVPMODEL_STATUS = tmp_path / "status"
+    else:
+        healthcheck._NVPMODEL_STATUS = tmp_path / "missing-status"
+    if conf is not None:
+        (tmp_path / "nvpmodel.conf").write_text(conf)
+        healthcheck._NVPMODEL_CONF = tmp_path / "nvpmodel.conf"
+    else:
+        healthcheck._NVPMODEL_CONF = tmp_path / "missing-conf"
 
 
-def test_current_power_mode_handles_missing_power_line():
-    """nvpmodel output without a Power Mode line returns ''."""
-    fake = MagicMock()
-    fake.stdout = "some other output\nno power mode here\n"
-    with patch("subprocess.run", return_value=fake):
-        assert healthcheck._current_power_mode() == ""
+def test_current_power_mode_returns_empty_when_status_file_missing(tmp_path):
+    """No status file (e.g. on x86 CI) → empty string, not raise."""
+    _stage_files(tmp_path, status=None)
+    assert healthcheck._current_power_mode() == ""
+
+
+def test_current_power_mode_returns_empty_when_status_unparseable(tmp_path):
+    """Status file present but not in `pmode:NNNN` format → empty string."""
+    _stage_files(tmp_path, status="garbage\n")
+    assert healthcheck._current_power_mode() == ""
+
+
+def test_current_power_mode_resolves_id_to_name(tmp_path):
+    """pmode:0001 → look up ID=1 in conf → return NAME 7W."""
+    _stage_files(tmp_path, status="pmode:0001\n")
+    assert healthcheck._current_power_mode() == "7W"
+
+
+def test_current_power_mode_handles_id_not_in_conf(tmp_path):
+    """Active mode ID has no matching entry in conf → empty string."""
+    _stage_files(tmp_path, status="pmode:0099\n")
+    assert healthcheck._current_power_mode() == ""
+
+
+def test_current_power_mode_returns_empty_when_conf_missing(tmp_path):
+    """Status file exists but conf is missing → empty string, not raise."""
+    _stage_files(tmp_path, status="pmode:0000\n", conf=None)
+    assert healthcheck._current_power_mode() == ""
+
+
+def test_current_power_mode_handles_zero_padded_id(tmp_path):
+    """pmode:0000 → ID=0 → 15W (proves leading zeros don't break int parse)."""
+    _stage_files(tmp_path, status="pmode:0000\n")
+    assert healthcheck._current_power_mode() == "15W"
 
 
 # --- _Handler ---
@@ -58,7 +86,6 @@ def _build_handler(path: str) -> healthcheck._Handler:
     h.path = path
     h.wfile = BytesIO()
     h.rfile = BytesIO()
-    # Capture send_response/send_header/end_headers/send_error calls
     h.send_response = MagicMock()
     h.send_header = MagicMock()
     h.end_headers = MagicMock()
@@ -89,28 +116,21 @@ def test_handler_returns_404_for_unknown_path():
 def test_handler_log_message_is_silent():
     """log_message override must not raise on any args."""
     h = _build_handler("/healthz")
-    h.log_message("anything", "goes", 42)   # must not raise
+    h.log_message("anything", "goes", 42)
 
 
 # --- start_in_thread ---
 
 def test_start_in_thread_returns_none_on_bind_failure():
     """If port is busy, return None instead of crashing the inference loop."""
-    healthcheck._started = None   # reset module state
+    healthcheck._started = None
     with patch.object(healthcheck, "HTTPServer",
                        side_effect=OSError("Address already in use")):
         assert healthcheck.start_in_thread() is None
 
 
 def test_start_in_thread_is_idempotent():
-    """Second call within the same process must reuse the first thread.
-
-    We pre-seed _started with a fake-alive thread instead of running a
-    real one; otherwise the MagicMock's serve_forever returns immediately
-    and the thread dies, forcing the function (correctly) to start a new
-    one. The behavior under test here is the early-return path, not the
-    bind-and-start path.
-    """
+    """Second call within the same process must reuse the first thread."""
     healthcheck._started = None
     fake_thread = MagicMock()
     fake_thread.is_alive.return_value = True
@@ -121,6 +141,10 @@ def test_start_in_thread_is_idempotent():
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
-    """Don't let one test's _started leak into another."""
+    """Don't let one test's _started or _NVPMODEL_* leak into another."""
+    orig_status = healthcheck._NVPMODEL_STATUS
+    orig_conf = healthcheck._NVPMODEL_CONF
     yield
     healthcheck._started = None
+    healthcheck._NVPMODEL_STATUS = orig_status
+    healthcheck._NVPMODEL_CONF = orig_conf

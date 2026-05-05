@@ -129,9 +129,17 @@ def connect_mqtt(broker: str, port: int,
 
 def open_video_source(source: str,
                        cap_factory: Optional[Callable[..., Any]] = None) -> Any:
-    """Open the video source. Tests pass a cap_factory returning a mock."""
+    """Open the video source. Tests pass a cap_factory returning a mock.
+
+    cv2.VideoCapture takes either a path (str) or a camera index (int).
+    Compose passes `--source 0` for the IMX219 camera; argparse gives us
+    the string "0", and cv2.VideoCapture("0") would look for a file named
+    "0" instead of opening camera index 0. Convert digit-only strings to
+    int so both forms work — `--source 0` (camera) and `--source /path/to/video.mp4`.
+    """
     factory = cap_factory or cv2.VideoCapture
-    cap = factory(source)
+    cap_arg: Any = int(source) if source.isdigit() else source
+    cap = factory(cap_arg)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open source: {source}")
     return cap
