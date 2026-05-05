@@ -33,6 +33,10 @@ runs/
 # Local secrets
 .env
 
+# Working scratch files (e.g. URL collection while drafting README
+# §"Submission Evidence"). Anything starting with .evidence- is local.
+.evidence-*
+
 # PDM
 .pdm-python
 .pdm-build/
