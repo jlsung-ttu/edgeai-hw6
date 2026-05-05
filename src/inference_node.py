@@ -127,19 +127,48 @@ def connect_mqtt(broker: str, port: int,
     return client
 
 
+def _build_csi_pipeline(sensor_id: int = 0, width: int = 1920, height: int = 1080,
+                          framerate: int = 30, target_w: int = 320, target_h: int = 320
+                          ) -> str:
+    """Build a GStreamer pipeline string for an IMX219 CSI camera.
+
+    The IMX219 doesn't expose a V4L2 stream cv2's default backend can
+    drive — `cv2.VideoCapture("/dev/video0")` opens silently but
+    `cap.read()` times out. The Jetson route is the Tegra GStreamer
+    plugins (`nvarguscamerasrc`). The dustynv/pytorch base image ships
+    them, so the container just needs to USE the right pipeline.
+    """
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM), width={width}, height={height}, "
+        f"format=NV12, framerate={framerate}/1 ! "
+        f"nvvidconv ! "
+        f"video/x-raw, width={target_w}, height={target_h}, format=BGRx ! "
+        f"videoconvert ! "
+        f"video/x-raw, format=BGR ! "
+        f"appsink drop=1 sync=false"
+    )
+
+
 def open_video_source(source: str,
                        cap_factory: Optional[Callable[..., Any]] = None) -> Any:
     """Open the video source. Tests pass a cap_factory returning a mock.
 
-    cv2.VideoCapture takes either a path (str) or a camera index (int).
-    Compose passes `--source 0` for the IMX219 camera; argparse gives us
-    the string "0", and cv2.VideoCapture("0") would look for a file named
-    "0" instead of opening camera index 0. Convert digit-only strings to
-    int so both forms work — `--source 0` (camera) and `--source /path/to/video.mp4`.
+    cv2.VideoCapture takes a path (str), camera index (int), or a
+    GStreamer pipeline (str + cv2.CAP_GSTREAMER backend). Three source
+    forms supported:
+      - "csi:N"        → IMX219 CSI sensor N via nvarguscamerasrc pipeline
+      - "0", "1", ...  → V4L2 camera index N (USB webcam)
+      - "/path/foo.mp4", "rtsp://..."  → file/URL via default backend
     """
     factory = cap_factory or cv2.VideoCapture
-    cap_arg: Any = int(source) if source.isdigit() else source
-    cap = factory(cap_arg)
+    if source.startswith("csi:"):
+        sensor_id = int(source.split(":", 1)[1])
+        cap = factory(_build_csi_pipeline(sensor_id), cv2.CAP_GSTREAMER)
+    elif source.isdigit():
+        cap = factory(int(source))
+    else:
+        cap = factory(source)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open source: {source}")
     return cap
@@ -164,20 +193,37 @@ def process_one_frame(cap: Any, model: Any, args: argparse.Namespace,
 
 
 def run_inference_loop(cap: Any, model: Any, args: argparse.Namespace,
-                        client: Any, max_frames: Optional[int] = None) -> int:
+                        client: Any, max_frames: Optional[int] = None,
+                        no_frame_timeout_s: float = 60.0,
+                        sleep_on_failure_s: float = 0.1) -> int:
     """Drive the inference loop. max_frames lets tests bound the loop.
 
-    In production max_frames is None (loop forever until SIGTERM).
+    Resilience: when process_one_frame returns False (camera dropped a
+    frame, V4L2 select() timed out, etc.), sleep briefly and retry
+    instead of exiting. Exit only when no successful frame for
+    `no_frame_timeout_s` seconds — that way a flaky camera doesn't
+    immediately take down the container (and with it /healthz), but a
+    permanently-dead camera still surfaces (container exits → docker
+    restart-policy → deploy.sh's healthcheck eventually fails → rollback).
+
+    In production max_frames is None (loop until SIGTERM or hard timeout).
     """
     frame_count = 0
+    last_success = time.monotonic()
     while is_running():
         if max_frames is not None and frame_count >= max_frames:
             break
-        if not process_one_frame(cap, model, args, client, frame_count):
+        if process_one_frame(cap, model, args, client, frame_count):
+            frame_count += 1
+            last_success = time.monotonic()
+            if frame_count % 10 == 0:
+                write_health()
+            continue
+        elapsed = time.monotonic() - last_success
+        if elapsed > no_frame_timeout_s:
+            print(f"[inference] No frames for {elapsed:.1f}s — exiting loop.")
             break
-        frame_count += 1
-        if frame_count % 10 == 0:
-            write_health()
+        time.sleep(sleep_on_failure_s)
     return frame_count
 
 

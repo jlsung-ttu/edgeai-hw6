@@ -23,11 +23,14 @@ services:
     environment:
       MQTT_BROKER: localhost
       MODEL_VERSION: ${IMAGE_TAG}
-    # Override the Dockerfile's CMD to use the camera (--source 0) instead
-    # of the in-image /opt/data/test_video.mp4 placeholder. With the
-    # camera attached, the inference loop runs continuously and the
-    # container stays alive for the deploy-side healthcheck poll.
-    command: ["python3", "-m", "src.inference_node", "--source", "0"]
+    # Override the Dockerfile's CMD to use the IMX219 CSI camera via the
+    # nvarguscamerasrc gstreamer pipeline. `csi:0` is parsed by
+    # open_video_source() and turned into the right pipeline + backend.
+    # The default V4L2 path (`--source 0`) silently fails on IMX219 — it
+    # opens /dev/video0 but cap.read() times out because there's no V4L2
+    # stream. Use `csi:N` for CSI cameras, `0` for USB webcams, a path
+    # for files.
+    command: ["python3", "-m", "src.inference_node", "--source", "csi:0"]
 volumes:
   lab12-models:
     external: true            # carried over from Lab 12 — engine cache persists

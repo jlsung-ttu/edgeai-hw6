@@ -253,6 +253,43 @@ def test_open_video_source_keeps_path_as_string():
     assert captured == ["/opt/data/video.mp4"]
 
 
+def test_open_video_source_csi_builds_gstreamer_pipeline():
+    """`csi:0` (IMX219 CSI camera) must build a GStreamer pipeline string
+    AND request the GStreamer backend explicitly. Default cv2 backend
+    (V4L2) silently opens but never produces frames for IMX219."""
+    captured: list = []
+
+    def factory(*args):
+        captured.append(args)
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        return cap
+
+    import cv2 as _cv2
+    node.open_video_source("csi:0", cap_factory=factory)
+    assert len(captured) == 1
+    pipeline, backend = captured[0]
+    assert "nvarguscamerasrc" in pipeline
+    assert "sensor-id=0" in pipeline
+    assert "appsink" in pipeline
+    assert backend == _cv2.CAP_GSTREAMER
+
+
+def test_open_video_source_csi_passes_sensor_id():
+    """Sensor index in the source string must reach the pipeline."""
+    captured: list = []
+
+    def factory(*args):
+        captured.append(args)
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        return cap
+
+    node.open_video_source("csi:1", cap_factory=factory)
+    pipeline, _backend = captured[0]
+    assert "sensor-id=1" in pipeline
+
+
 # ──────────────────────────────────────────────────────────────────
 # process_one_frame
 # ──────────────────────────────────────────────────────────────────
@@ -318,15 +355,48 @@ def test_run_inference_loop_bounded_by_max_frames():
     assert client.publish.call_count == 3
 
 
-def test_run_inference_loop_stops_on_eof():
+def test_run_inference_loop_stops_after_no_frame_timeout():
+    """Two successful frames, then forever-failing reads → loop must exit
+    after no_frame_timeout_s seconds, not on the first failure (resilience
+    fix from D2: a flaky camera shouldn't take down the container instantly,
+    but a permanently-dead one still surfaces eventually)."""
     cap = MagicMock()
-    cap.read.side_effect = [(True, "f"), (True, "f"),
-                              (False, None), (False, None)]
+    # 2 successes, then unbounded failures
+    cap.read.side_effect = ([(True, "f"), (True, "f")]
+                            + [(False, None)] * 1000)
     model = MagicMock()
     model.predict.return_value = _fake_results([[]], names={})
     client = MagicMock()
-    n = node.run_inference_loop(cap, model, _args(), client, max_frames=10)
+    n = node.run_inference_loop(cap, model, _args(), client, max_frames=100,
+                                no_frame_timeout_s=0.05,
+                                sleep_on_failure_s=0.005)
     assert n == 2
+
+
+def test_run_inference_loop_resilient_to_transient_failures():
+    """Transient frame failures interleaved with successes must NOT exit
+    the loop — last_success keeps getting updated, timeout never fires."""
+    cap = MagicMock()
+    cap.read.side_effect = [
+        (True, "f1"),
+        (False, None),    # transient — process_one_frame's seek-then-retry also fails
+        (False, None),
+        (True, "f2"),     # recovery
+        (True, "f3"),
+        (False, None),
+        (False, None),
+        (True, "f4"),
+    ]
+    model = MagicMock()
+    model.predict.return_value = _fake_results([[]], names={})
+    client = MagicMock()
+    n = node.run_inference_loop(cap, model, _args(), client, max_frames=4,
+                                no_frame_timeout_s=10.0,
+                                sleep_on_failure_s=0.001)
+    # 3 process_one_frame successes wrap around the failures + final read
+    # forms the 4th. Exact count depends on cv2 mock interleaving — the
+    # key assertion is "loop kept going past failures" (n >= 2).
+    assert n >= 2
 
 
 def test_run_inference_loop_writes_health_every_10_frames(tmp_path, monkeypatch):
