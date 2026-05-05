@@ -12,6 +12,13 @@ license = {text = "MIT"}
 # what gets pip-installed inside Dockerfile.ci. The host PDM venv is just
 # for the dev loop (lint, tests, security scans). Match HW5's pattern:
 # heavy ML stays in containers; host PDM is small.
+#
+# NOTE: Step 0.5 of HW6 instructs students to REPLACE this slim config
+# with the full HW5-style 5-check compliance pipeline (ruff strict, mypy,
+# bandit, pylint, plus pdm scripts: check, ci, test-cov etc.). This
+# reference repo is intentionally pre-Step-0.5 — it shows the baseline
+# students start from. The compliance refactor (class-per-file +
+# annotations + docstrings) is the student's HW6 work.
 dependencies = [
     "paho-mqtt>=2.0",
     "numpy>=1.26,<2",
@@ -71,8 +78,9 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-# Small starter set — matches Lab 12's baseline. Extend with B/UP/SIM/N/RUF
-# for tighter style enforcement if you want HW5-grade strictness.
+# Small starter set — matches Lab 12's baseline. Step 0.5 of HW6 swaps
+# this for the strict select+ignore from HW5 (B/UP/SIM/N/RUF/PLR2004/
+# ANN*/D), enforced by `pdm run check`.
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]   # line-too-long: leave for the formatter
 
