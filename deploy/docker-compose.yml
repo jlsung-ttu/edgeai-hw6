@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Janlung Sung
+# Tatung University — I4210 AI實務專題
+# deploy/docker-compose.yml — image tag injected via $IMAGE_TAG env var
+# (deploy.sh exports it before invoking compose).
+services:
+  inference:
+    image: ghcr.io/jlsung-ttu/edgeai-hw6:${IMAGE_TAG}
+    runtime: nvidia
+    restart: unless-stopped
+    network_mode: host        # so /healthz on :8000 is reachable from the deploy host
+    devices:
+      - /dev/video0:/dev/video0     # IMX219 camera passthrough — adjust if your camera is on /dev/video1, /dev/video2, etc.
+    volumes:
+      - lab12-models:/opt/models
+      # Bind-mount the host's nvpmodel binary + its config so /healthz can
+      # call `nvpmodel -q` to report the LIVE power state, not a config
+      # value. Read-only — the container can query but not change it.
+      - /usr/sbin/nvpmodel:/usr/sbin/nvpmodel:ro
+      - /etc/nvpmodel.conf:/etc/nvpmodel.conf:ro
+    environment:
+      MQTT_BROKER: localhost
+      MODEL_VERSION: ${IMAGE_TAG}
+    # Override the Dockerfile's CMD to use the camera (--source 0) instead
+    # of the in-image /opt/data/test_video.mp4 placeholder. With the
+    # camera attached, the inference loop runs continuously and the
+    # container stays alive for the deploy-side healthcheck poll.
+    command: ["python3", "-m", "src.inference_node", "--source", "0"]
+volumes:
+  lab12-models:
+    external: true            # carried over from Lab 12 — engine cache persists

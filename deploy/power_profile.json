@@ -1,0 +1,5 @@
+{
+  "production":     "15W",
+  "low_power_demo": "7W",
+  "burst_demo":     "MAXN_SUPER"
+}
