@@ -19,10 +19,12 @@ services:
       - lab12-models:/opt/models
       # The test video carried from HW5 / Lab 9. Mounted read-only so
       # multiple deploys can't accidentally truncate the source file.
-      # Inference_node's --source default is /opt/data/test_video.mp4,
+      # inference_node's --source default is /opt/data/test_video.mp4,
       # and the loop seeks back to frame 0 on EOF — so a 15-s clip plays
       # forever and the container stays alive for the deploy healthcheck.
-      - ./models/test_video.mp4:/opt/data/test_video.mp4:ro
+      # Relative path is resolved against THIS file's directory (deploy/),
+      # so `../models/...` reaches models/ at the repo root.
+      - ../models/test_video.mp4:/opt/data/test_video.mp4:ro
       # /healthz reads these two files directly to report the LIVE power
       # mode. We can't run `nvpmodel -q` inside the container because the
       # binary hardcodes /proc/device-tree/compatible, and procfs paths
