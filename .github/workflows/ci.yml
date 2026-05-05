@@ -1,4 +1,6 @@
-# Homework 6 — five-stage CI pipeline
+# Copyright (c) 2026 Janlung Sung
+# Tatung University — I4210 AI實務專題
+# .github/workflows/ci.yml — five-stage CI pipeline
 # Triggers: push (any branch), pull_request → main, workflow_dispatch
 # Jobs:     lint → (test, security-scan) → build → integration-test
 #

@@ -24,6 +24,8 @@ import cv2
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
+from src import healthcheck
+
 # `ultralytics` is imported lazily inside main()'s default model_factory.
 # It pulls torch transitively, and torch has no x86 PyPI wheel for the Jetson
 # CUDA build we use (PDM excludes it from the resolution). Deferring the
@@ -183,7 +185,11 @@ def _default_model_factory(path: str, task: str) -> Any:   # pragma: no cover
     """Real YOLO loader. Imported lazily so unit tests don't pull torch.
     Skipped from coverage because torch is Jetson-only and tests use the
     injected mock factory; real exercise happens in tests/integration/."""
-    from ultralytics import YOLO  # noqa: PLC0415  (deliberate lazy import)
+    # Deliberate lazy import — torch is Jetson-only, can't be loaded on the
+    # x86 test job. The HW5-style pylint config (deferred to the compliance
+    # refactor task) globally disables `import-outside-toplevel` which is
+    # what would otherwise flag this; current ruff config doesn't select PL.
+    from ultralytics import YOLO
     return YOLO(path, task=task)
 
 
@@ -193,6 +199,10 @@ def main(argv: Optional[Iterable[str]] = None,
           mqtt_factory: Optional[Callable[..., mqtt.Client]] = None,
           max_frames: Optional[int] = None) -> int:
     """Main entry point. All heavy deps are injectable for tests."""
+    # Start the /healthz HTTP server on a daemon thread (Part D D1).
+    # Daemon=True means it dies with main() — no explicit cleanup needed.
+    healthcheck.start_in_thread()
+
     args = parse_args(argv)
     print(f"[inference] Loading model: {args.model}")
     model = (model_factory or _default_model_factory)(args.model, "detect")
