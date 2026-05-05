@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Janlung Sung
+# Tatung University — I4210 AI實務專題
 """Lab 12 smoke tests — minimal CPU-only assertions that don't need GPU.
 
 These tests run inside GitHub's free hosted runner (Ubuntu x86), so they
